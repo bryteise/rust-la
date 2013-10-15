@@ -13,6 +13,7 @@ pub fn alloc_dirty_vec<T>(n : uint) -> ~[T] {
   v
 }
 
+/*
 // Ported from JAMA.
 // sqrt(a^2 + b^2) without under/overflow.
 pub fn hypot<T : Zero + One + Signed + Algebraic + Orderable + Clone>(a : T, b : T) -> T {
@@ -70,3 +71,4 @@ fn hypot_test() {
   assert!(hypot(-4.0, 0.0) == 4.0);
   assert!(hypot(0.0, -4.0) == 4.0);
 }
+*/

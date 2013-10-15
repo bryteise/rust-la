@@ -7,6 +7,7 @@ pub mod matrix;
 
 pub mod util;
 
+/*
 pub mod decomp {
   pub mod cholesky;
   pub mod eigen;
@@ -19,3 +20,4 @@ pub mod eig {
   pub mod powermethod;
 }
 
+*/

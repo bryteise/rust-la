@@ -5,21 +5,126 @@ use std::rand;
 use std::rand::{Rand};
 use std::vec;
 
-use decomp::lu;
-use decomp::qr;
+//use decomp::lu;
+//use decomp::qr;
 use util::{alloc_dirty_vec};
 
 #[deriving(Clone, Eq)]
-pub struct Matrix<T> {
+pub struct Matrix<'self, T> {
   noRows : uint,
   noCols : uint,
-  data : ~[T]
+  data : MatrixData<'self, T>
+}
+
+#[deriving(Clone, Eq)]
+pub enum MatrixData<'self, T> {
+  DenseData(~[T]),
+  DiagonalData(~[T]),
+  TransposedData(&'self MatrixData<'self, T>)
+}
+
+pub enum RowIterator<'self, T> {
+  DenseRowIterator(DenseRowIterator<'self, T>),
+  DiagonalRowIterator(DiagonalRowIterator<T>)
+}
+
+pub struct DenseRowIterator<'self, T> {
+  data : &'self ~[T],
+  start_idx : uint,
+  end_idx : uint,
+  current_idx : uint,
+  idx_increment : uint
+}
+
+pub struct DiagonalRowIterator<T> {
+  diag_entry : T,
+  row : uint,
+  start_idx : uint,
+  end_idx : uint,
+  current_idx : uint
+}
+
+impl <'self, T : Clone + Zero> Iterator<T> for RowIterator<'self, T> {
+  fn next(&mut self) -> Option<T> {
+    match(*self) {
+      DenseRowIterator(ref mut dense) => {
+        let current_idx = dense.current_idx;
+        if(current_idx >= dense.data.len()) {
+          None
+        } else {
+          dense.current_idx += dense.idx_increment;
+          Some(dense.data[current_idx].clone())
+        }
+      }
+      DiagonalRowIterator(ref mut diag) => {
+        let current_idx = diag.current_idx;
+        if(current_idx == diag.end_idx) {
+          None
+        } else {
+          diag.current_idx += 1;
+          Some(if(diag.row == current_idx) { diag.diag_entry.clone() } else { num::zero() })
+        }
+      }
+    }
+  }
+}
+
+impl <'self, T : Clone + Zero> RandomAccessIterator<T> for RowIterator<'self, T> {
+  fn indexable(&self) -> uint {
+    match(*self) {
+      DenseRowIterator(ref dense) => {
+        (dense.data.len() - dense.start_idx) / dense.idx_increment
+      }
+      DiagonalRowIterator(ref diag) => {
+        diag.end_idx - diag.start_idx
+      }
+    }
+  }
+
+  fn idx(&self, index : uint) -> Option<T> {
+    match(*self) {
+      DenseRowIterator(ref dense) => {
+        let idx = dense.start_idx + index * dense.idx_increment;
+        if(idx >= dense.data.len()) {
+          None
+        } else {
+          Some(dense.data[idx].clone())
+        }
+      }
+      DiagonalRowIterator(ref diag) => {
+        if(index == diag.row) {
+          Some(diag.diag_entry.clone())
+        } else {
+          Some(num::zero())
+        }
+      }
+    }
+  }
+}
+
+impl<'self, T> Matrix<'self, T> {
+  pub fn row_iterator(&'self self, row : int) -> RowIterator<'self, T> {
+    match(self.data) {
+      DenseData(ref data) => {
+        DenseRowIterator(
+          DenseRowIterator {
+            data : data,
+            start_idx : 0,
+            end_idx : 0,
+            current_idx : 0,
+            idx_increment : 1
+          }
+        )
+      }
+      _ => { fail!(); }
+    }
+  }
 }
 
 pub fn matrix<T>(noRows : uint, noCols : uint, data : ~[T]) -> Matrix<T> {
   assert!(noRows * noCols == data.len());
   assert!(noRows > 0 && noCols > 0);
-  Matrix { noRows : noRows, noCols : noCols, data : data }
+  Matrix { noRows : noRows, noCols : noCols, data : DenseData(data) }
 }
 
 pub fn random<T : Rand>(noRows : uint, noCols : uint) -> Matrix<T> {
@@ -28,7 +133,7 @@ pub fn random<T : Rand>(noRows : uint, noCols : uint) -> Matrix<T> {
   for i in range(0u, elems) {
     d[i] = rand::random::<T>();
   }
-  Matrix { noRows : noRows, noCols : noCols, data : d }
+  Matrix { noRows : noRows, noCols : noCols, data : DenseData(d) }
 }
 
 pub fn id<T : One + Zero + Clone>(m : uint, n : uint) -> Matrix<T> {
@@ -36,73 +141,101 @@ pub fn id<T : One + Zero + Clone>(m : uint, n : uint) -> Matrix<T> {
   for i in range(0u, num::min(m, n)) {
     d[i * n + i] = num::one();
   }
-  Matrix { noRows : m, noCols : n, data : d }
+  Matrix { noRows : m, noCols : n, data : DenseData(d) }
 }
 
 pub fn zero<T : Zero + Clone>(noRows : uint, noCols : uint) -> Matrix<T> {
   Matrix {
     noRows : noRows,
     noCols : noCols,
-    data : vec::from_elem(noRows * noCols, num::zero())
+    data : DenseData(vec::from_elem(noRows * noCols, num::zero()))
   }
 }
 
 pub fn vector<T>(data : ~[T]) -> Matrix<T> {
   assert!(data.len() > 0);
-  Matrix { noRows : data.len(), noCols : 1, data : data }
+  Matrix { noRows : data.len(), noCols : 1, data : DenseData(data) }
 }
 
 pub fn zero_vector<T : Zero + Clone>(noRows : uint) -> Matrix<T> {
-  Matrix { noRows : noRows, noCols : 1, data : vec::from_elem(noRows, num::zero()) }
+  Matrix { noRows : noRows, noCols : 1, data : DenseData(vec::from_elem(noRows, num::zero())) }
 }
 
 pub fn one_vector<T : One + Clone>(noRows : uint) -> Matrix<T> {
-  Matrix { noRows : noRows, noCols : 1, data : vec::from_elem(noRows, num::one()) }
+  Matrix { noRows : noRows, noCols : 1, data : DenseData(vec::from_elem(noRows, num::one())) }
 }
 
 pub fn row_vector<T>(data : ~[T]) -> Matrix<T> {
   assert!(data.len() > 0);
-  Matrix { noRows : 1, noCols : data.len(), data : data }
+  Matrix { noRows : 1, noCols : data.len(), data : DenseData(data) }
 }
 
-impl<T> Matrix<T> {
+impl<'self, T> Matrix<'self, T> {
   #[inline]
   pub fn rows(&self) -> uint { self.noRows }
 }
 
-impl<T> Matrix<T> {
+impl<'self, T> Matrix<'self, T> {
   #[inline]
   pub fn cols(&self) -> uint { self.noCols }
 }
 
-impl<T : Clone> Matrix<T> {
+impl<'self, T : Zero + Clone> Matrix<'self, T> {
   pub fn get(&self, row : uint, col : uint) -> T {
     assert!(row < self.noRows && col < self.noCols);
-    self.data[row * self.noCols + col].clone()
+    match(self.data) {
+      DenseData(ref data) => { data[row * self.noCols + col].clone() }
+      DiagonalData(ref data) => { if row != col { num::zero() } else { data[row].clone() } }
+      TransposedData(&DenseData(ref data)) => { data[col * self.noRows + row].clone() }
+      _ => { fail!("Not supported.") }
+    }
   }
 }
 
-impl<T : Clone> Matrix<T> {
+impl<'self, T : Clone> Matrix<'self, T> {
   pub fn get_ref<'lt>(&'lt self, row : uint, col : uint) -> &'lt T {
     assert!(row < self.noRows && col < self.noCols);
-    &self.data[row * self.noCols + col]
+    match(self.data) {
+      DenseData(ref data) => { &data[row * self.noCols + col] }
+      DiagonalData(ref data) => {
+        assert!(row == col);
+        &data[row]
+      }
+      TransposedData(&DenseData(ref data)) => { &data[col * self.noRows + row] }
+      _ => { fail!("Not supported.") }
+    }
   }
 }
 
-impl<T : Clone> Matrix<T> {
+impl<'self, T : Clone> Matrix<'self, T> {
   pub fn get_mref<'lt>(&'lt mut self, row : uint, col : uint) -> &'lt mut T {
     assert!(row < self.noRows && col < self.noCols);
-    &mut self.data[row * self.noCols + col]
+    match(self.data) {
+      DenseData(ref mut data) => { &mut data[row * self.noCols + col] }
+      DiagonalData(ref mut data) => {
+        assert!(row == col);
+        &mut data[row]
+      }
+      _ => { fail!("Not supported.") }
+    }
   }
 }
 
-impl<T : Clone> Matrix<T> {
+impl<'self, T : Clone> Matrix<'self, T> {
   pub fn set(&mut self, row : uint, col : uint, val : T) {
     assert!(row < self.noRows && col < self.noCols);
-    self.data[row * self.noCols + col] = val.clone()
+    match(self.data) {
+      DenseData(ref mut data) => { data[row * self.noCols + col] = val.clone() }
+      DiagonalData(ref mut data) => {
+        assert!(row == col);
+        data[row] = val.clone()
+      }
+      TransposedData(_) => { fail!("Not implemented yet.") }
+    }
   }
 }
 
+/*
 impl<S, T> Matrix<S> {
   pub fn map(&self, f : &fn(&S) -> T) -> Matrix<T> {
     let elems = self.data.len();
@@ -117,7 +250,9 @@ impl<S, T> Matrix<S> {
     }
   }
 }
+*/
 
+/*
 impl<T> Matrix<T> {
   pub fn mmap(&mut self, f : &fn(&T) -> T) {
     for i in range(0u, self.data.len()) {
@@ -125,7 +260,9 @@ impl<T> Matrix<T> {
     }
   }
 }
+*/
 
+/*
 impl<T : ApproxEq<T>> Matrix<T> {
   pub fn approx_eq(&self, m : &Matrix<T>) -> bool {
     if self.noRows != m.noRows || self.noCols != m.noCols { return false };
@@ -135,7 +272,9 @@ impl<T : ApproxEq<T>> Matrix<T> {
     true
   }
 }
+*/
 
+/*
 impl<T : Clone> Matrix<T> {
   pub fn cr(&self, m : &Matrix<T>) -> Matrix<T> {
     assert!(self.noRows == m.noRows);
@@ -163,7 +302,9 @@ impl<T : Clone> Matrix<T> {
     }
   }
 }
+*/
 
+/*
 impl<T : Clone> Matrix<T> {
   pub fn cb(&self, m : &Matrix<T>) -> Matrix<T> {
     assert!(self.noCols == m.noCols);
@@ -183,14 +324,16 @@ impl<T : Clone> Matrix<T> {
     }
   }
 }
+*/
 
-impl<T : Clone> Matrix<T> {
-  pub fn t(&self) -> Matrix<T> {
-    let elems = self.data.len();
+impl<'self, T : Clone> Matrix<'self, T> {
+  fn t_dense(&self) -> Matrix<T> {
+    let data = match(self.data) { DenseData(ref data) => { data } _ => { fail!("Invalid matrix type.") } };
+    let elems = data.len();
     let mut d = alloc_dirty_vec(elems);
     let mut srcIdx = 0;
     for i in range(0u, elems) {
-      d[i] = self.data[srcIdx].clone();
+      d[i] = data[srcIdx].clone();
       srcIdx += self.noCols;
       if(srcIdx >= elems) {
         srcIdx -= elems;
@@ -200,26 +343,44 @@ impl<T : Clone> Matrix<T> {
     Matrix {
       noRows: self.noCols,
       noCols: self.noRows,
-      data : d
+      data : DenseData(d)
+    }
+  }
+
+  fn t_diagonal(&self) -> Matrix<'self, T> {
+    Matrix {
+      noRows: self.noCols,
+      noCols: self.noRows,
+      data : self.data.clone()
+    }
+  }
+
+  #[inline]
+  pub fn t(&self) -> Matrix<'self, T> {
+    match(self.data) {
+      DenseData(_) => { self.t_dense() }
+      DiagonalData(_) => { self.t_diagonal() }
+      TransposedData(_) => { fail!("Not implemented yet.") }
     }
   }
 }
 
-impl<T : Clone> Matrix<T> {
-  pub fn mt(&mut self) {
-    let mut visited = vec::from_elem(self.data.len(), false);
+impl<'self, T : Clone> Matrix<'self, T> {
+  fn mt_dense(&mut self) {
+    let data = match(self.data) { DenseData(ref mut data) => { data } _ => { fail!("Invalid matrix type.") } };
+    let mut visited = vec::from_elem(data.len(), false);
 
-    for cycleIdx in range(1u, self.data.len() - 1) {
+    for cycleIdx in range(1u, data.len() - 1) {
       if(visited[cycleIdx]) {
         continue;
       }
 
       let mut idx = cycleIdx;
-      let mut prevValue = self.data[idx].clone();
+      let mut prevValue = data[idx].clone();
       while(true) {
-        idx = (self.noRows * idx) % (self.data.len() - 1);
-        let currentValue = self.data[idx].clone();
-        self.data[idx] = prevValue;
+        idx = (self.noRows * idx) % (data.len() - 1);
+        let currentValue = data[idx].clone();
+        data[idx] = prevValue;
         if(idx == cycleIdx) {
           break;
         }
@@ -233,8 +394,24 @@ impl<T : Clone> Matrix<T> {
     self.noRows = self.noCols;
     self.noCols = rows;
   }
+
+  fn mt_diagonal(&mut self) {
+    let rows = self.noRows;
+    self.noRows = self.noCols;
+    self.noCols = rows;
+  }
+
+  #[inline]
+  pub fn mt(&mut self) {
+    match(self.data) {
+      DenseData(_) => { self.mt_dense() }
+      DiagonalData(_) => { self.mt_diagonal() }
+      TransposedData(_) => { fail!("Not implemented yet.") }
+    }
+  }
 }
 
+/*
 impl<T : Clone> Matrix<T> {
   pub fn minor(&self, row : uint, col : uint) -> Matrix<T> {
     assert!(row < self.noRows && col < self.noCols && self.noRows > 1 && self.noCols > 1);
@@ -260,7 +437,9 @@ impl<T : Clone> Matrix<T> {
     }
   }
 }
+*/
 
+/*
 impl<T : Clone> Matrix<T> {
   pub fn sub_matrix(&self, startRow : uint, startCol : uint, endRow : uint, endCol : uint) -> Matrix<T> {
     assert!(startRow < endRow);
@@ -301,7 +480,9 @@ impl<T : Clone> Matrix<T> {
     }
   }
 }
+*/
 
+/*
 impl<T : Clone> Matrix<T> {
   pub fn permute_rows(&self, rows : &[uint]) -> Matrix<T> {
     let no_rows = rows.len();
@@ -346,7 +527,9 @@ impl<T : Clone> Matrix<T> {
     }
   }
 }
+*/
 
+/*
 impl<T : Clone> Matrix<T> {
   pub fn filter_rows(&self, f : &fn(m : &Matrix<T>, row : uint) -> bool) -> Matrix<T> {
     let mut rows = vec::with_capacity(self.rows());
@@ -390,8 +573,9 @@ impl<T : Clone> Matrix<T> {
     self.permute_columns(cols)
   }
 }
+*/
 
-impl<T : Clone> Matrix<T> {
+impl<'self, T : Zero + Clone> Matrix<'self, T> {
   pub fn print(&self) {
     io::print(fmt!("%10s ", ""));
     for col in range(0u, self.noCols) {
@@ -408,89 +592,161 @@ impl<T : Clone> Matrix<T> {
   }
 }
 
-impl<T : Neg<T>> Matrix<T> {
+impl<'self, T : Neg<T>> Matrix<'self, T> {
   pub fn neg(&self) -> Matrix<T> {
-    let elems = self.data.len();
+    let data = match(self.data) {
+      DenseData(ref data) | DiagonalData(ref data) => { data }
+      TransposedData(_) => { fail!("Not implemented yet.") }
+    };
+    let elems = data.len();
     let mut d = alloc_dirty_vec(elems);
     for i in range(0u, elems) {
-      d[i] = - self.data[i];
+      d[i] = - data[i];
     }
     Matrix {
       noRows: self.noRows,
       noCols: self.noCols,
-      data : d
+      data : match(self.data) {
+        DenseData(_) => { DenseData(d) }
+        DiagonalData(_) => { DiagonalData(d) }
+        TransposedData(_) => { fail!("Not implemented yet.") }
+      }
     }
   }
 }
 
-impl <T : Neg<T>> Neg<Matrix<T>> for Matrix<T> {
+impl <'self, T : Neg<T>> Neg<Matrix<'self, T>> for Matrix<'self, T> {
   fn neg(&self) -> Matrix<T> { self.neg() }
 }
 
-impl<T : Neg<T>> Matrix<T> {
+impl<'self, T : Neg<T>> Matrix<'self, T> {
   pub fn mneg(&mut self) {
-    for i in range(0u, self.data.len()) {
-      self.data[i] = - self.data[i];
+    let data = match(self.data) {
+      DenseData(ref mut data) | DiagonalData(ref mut data) => { data }
+      TransposedData(_) => { fail!("Not implemented yet.") }
+    };
+    for i in range(0u, data.len()) {
+      data[i] = - data[i];
     }
   }
 }
 
-impl<T : Mul<T, T>> Matrix<T> {
+impl<'self, T : Mul<T, T>> Matrix<'self, T> {
   pub fn scale(&self, factor : T) -> Matrix<T> {
-    let elems = self.data.len();
+    let data = match(self.data) {
+      DenseData(ref data) | DiagonalData(ref data) => { data }
+      TransposedData(_) => { fail!("Not implemented yet.") }
+    };
+    let elems = data.len();
     let mut d = alloc_dirty_vec(elems);
     for i in range(0u, elems) {
-      d[i] = factor * self.data[i];
+      d[i] = factor * data[i];
     }
     Matrix {
       noRows: self.noRows,
       noCols: self.noCols,
-      data : d
+      data : match(self.data) {
+        DenseData(_) => { DenseData(d) }
+        DiagonalData(_) => { DiagonalData(d) }
+        TransposedData(_) => { fail!("Not implemented yet.") }
+      }
     }
   }
 }
 
-impl<T : Mul<T, T>> Matrix<T> {
+impl<'self, T : Mul<T, T>> Matrix<'self, T> {
   pub fn mscale(&mut self, factor : T) {
-    for i in range(0u, self.data.len()) {
-      self.data[i] = factor * self.data[i];
+    let data = match(self.data) {
+      DenseData(ref mut data) | DiagonalData(ref mut data) => { data }
+      TransposedData(_) => { fail!("Not implemented yet.") }
+    };
+    for i in range(0u, data.len()) {
+      data[i] = factor * data[i];
     }
   }
 }
 
-impl<T : Add<T, T>> Matrix<T> {
+impl<'self, T : Add<T, T> + Clone> Matrix<'self, T> {
+  fn add_dense_diagonal(&self, m : &Matrix<T>) -> Matrix<T> {
+    let data = match(self.data) { DenseData(ref data) => { data } _ => { fail!("Invalid matrix type.") } };
+    let mdata = match(m.data) { DiagonalData(ref data) => { data } _ => { fail!("Invalid matrix type.") } };
+    let elems = data.len();
+    let mut d = alloc_dirty_vec(elems);
+    let mut diag_idx = 0;
+    let mut next_diag_offset = 0;
+    for i in range(0u, elems) {
+      if(i != next_diag_offset) {
+        d[i] = data[i].clone();
+      } else {
+        d[i] = data[i] + mdata[diag_idx];
+        diag_idx += 1;
+        next_diag_offset += self.noCols + 1;
+      }
+    }
+    Matrix {
+      noRows: self.noRows,
+      noCols: self.noCols,
+      data : DenseData(d)
+    }
+  }
+
   pub fn add(&self, m : &Matrix<T>) -> Matrix<T> {
     assert!(self.noRows == m.noRows);
     assert!(self.noCols == m.noCols);
 
-    let elems = self.data.len();
-    let mut d = alloc_dirty_vec(elems);
-    for i in range(0u, elems) {
-      d[i] = self.data[i] + m.data[i];
-    }
-    Matrix {
-      noRows: self.noRows,
-      noCols: self.noCols,
-      data : d
+    match(&self.data, &m.data) {
+      (&DenseData(ref data), &DenseData(ref mdata)) | (&DiagonalData(ref data), &DiagonalData(ref mdata)) => {
+        let elems = data.len();
+        let mut d = alloc_dirty_vec(elems);
+        for i in range(0u, elems) {
+          d[i] = data[i] + mdata[i];
+        }
+        Matrix {
+          noRows: self.noRows,
+          noCols: self.noCols,
+          data : match(self.data) {
+            DenseData(_) => { DenseData(d) }
+            DiagonalData(_) => { DiagonalData(d) }
+            TransposedData(_) => { fail!("Not implemented yet.") }
+          }
+        }
+      }
+      (&DenseData(_), &DiagonalData(_)) => { self.add_dense_diagonal(m) }
+      (&DiagonalData(_), &DenseData(_)) => { m.add_dense_diagonal(self) }
+      (_, _) => { fail!("Not implemented yet.") }
     }
   }
 }
 
-impl <T : Add<T, T>> Add<Matrix<T>, Matrix<T>> for Matrix<T> {
+impl <'self, T : Add<T, T> + Clone> Add<Matrix<'self, T>, Matrix<'self, T>> for Matrix<'self, T> {
   fn add(&self, rhs: &Matrix<T>) -> Matrix<T> { self.add(rhs) }
 }
 
-impl<T : Add<T, T>> Matrix<T> {
+impl<'self, T : Add<T, T>> Matrix<'self, T> {
   pub fn madd(&mut self, m : &Matrix<T>) {
     assert!(self.noRows == m.noRows);
     assert!(self.noCols == m.noCols);
 
-    for i in range(0u, self.data.len()) {
-      self.data[i] = self.data[i] + m.data[i];
+    match(&mut self.data, &m.data) {
+      (&DenseData(ref mut data), &DenseData(ref mdata)) | (&DiagonalData(ref mut data), &DiagonalData(ref mdata)) => {
+        for i in range(0u, data.len()) {
+          data[i] = data[i] + mdata[i];
+        }
+      }
+      (&DenseData(ref mut data), &DiagonalData(ref mdata)) => {
+        let mut dest_idx = 0;
+        for i in range(0u, mdata.len()) {
+          data[dest_idx] = data[dest_idx] + mdata[i];
+          dest_idx += self.noCols + 1;
+        }
+      }
+      (&DiagonalData(_), &DenseData(_)) => { fail!("Cannot madd a dense matrix to a diagonal matrix."); }
+      (_, _) => { fail!("Not implemented yet.") }
     }
   }
 }
 
+/*
 impl<T : Sub<T, T>> Matrix<T> {
   pub fn sub(&self, m : &Matrix<T>) -> Matrix<T> {
     assert!(self.noRows == m.noRows);
@@ -508,11 +764,15 @@ impl<T : Sub<T, T>> Matrix<T> {
     }
   }
 }
+*/
 
+/*
 impl <T : Sub<T, T>> Sub<Matrix<T>, Matrix<T>> for Matrix<T> {
   fn sub(&self, rhs: &Matrix<T>) -> Matrix<T> { self.sub(rhs) }
 }
+*/
 
+/*
 impl<T : Sub<T, T>> Matrix<T> {
   pub fn msub(&mut self, m : &Matrix<T>) {
     assert!(self.noRows == m.noRows);
@@ -523,7 +783,9 @@ impl<T : Sub<T, T>> Matrix<T> {
     }
   }
 }
+*/
 
+/*
 impl<T : Mul<T, T>> Matrix<T> {
   pub fn elem_mul(&self, m : &Matrix<T>) -> Matrix<T> {
     assert!(self.noRows == m.noRows);
@@ -541,7 +803,9 @@ impl<T : Mul<T, T>> Matrix<T> {
     }
   }
 }
+*/
 
+/*
 impl<T : Mul<T, T>> Matrix<T> {
   pub fn melem_mul(&mut self, m : &Matrix<T>) {
     assert!(self.noRows == m.noRows);
@@ -552,7 +816,9 @@ impl<T : Mul<T, T>> Matrix<T> {
     }
   }
 }
+*/
 
+/*
 impl<T : Div<T, T>> Matrix<T> {
   pub fn elem_div(&self, m : &Matrix<T>) -> Matrix<T> {
     assert!(self.noRows == m.noRows);
@@ -570,7 +836,9 @@ impl<T : Div<T, T>> Matrix<T> {
     }
   }
 }
+*/
 
+/*
 impl<T : Div<T, T>> Matrix<T> {
   pub fn melem_div(&mut self, m : &Matrix<T>) {
     assert!(self.noRows == m.noRows);
@@ -581,7 +849,9 @@ impl<T : Div<T, T>> Matrix<T> {
     }
   }
 }
+*/
 
+/*
 impl<T : Add<T, T> + Mul<T, T> + Zero + Clone> Matrix<T> {
   pub fn mul(&self, m : &Matrix<T>) -> Matrix<T> {
     assert!(self.noCols == m.noRows);
@@ -605,11 +875,15 @@ impl<T : Add<T, T> + Mul<T, T> + Zero + Clone> Matrix<T> {
     }
   }
 }
+*/
 
+/*
 impl<T : Mul<T, T> + Add<T, T> + Zero + Clone> Mul<Matrix<T>, Matrix<T>> for Matrix<T> {
   fn mul(&self, rhs: &Matrix<T>) -> Matrix<T> { self.mul(rhs) }
 }
+*/
 
+/*
 impl<T : Add<T, T> + Mul<T, T> + Zero + Clone> Matrix<T> {
   pub fn mmul(&mut self, m : &Matrix<T>) {
     assert!(self.noCols == m.noRows);
@@ -630,7 +904,9 @@ impl<T : Add<T, T> + Mul<T, T> + Zero + Clone> Matrix<T> {
     self.data = d
   }
 }
+*/
 
+/*
 impl<T : Add<T, T> + Zero> Matrix<T> {
   pub fn trace(&self) -> T {
     let mut sum : T = num::zero();
@@ -642,27 +918,35 @@ impl<T : Add<T, T> + Zero> Matrix<T> {
     sum
   }
 }
+*/
 
+/*
 impl<T : Add<T, T> + Sub<T, T> + Mul<T, T> + Div<T, T> + Neg<T> + Eq + Ord + ApproxEq<T> + One + Zero + Clone + Signed + Algebraic> Matrix<T> {
   pub fn det(&self) -> T {
     assert!(self.noCols == self.noRows);
     lu::LUDecomposition::new(self).det()
   }
 }
+*/
 
+/*
 impl<T : Add<T, T> + Sub<T, T> + Mul<T, T> + Div<T, T> + Neg<T> + Eq + Ord + ApproxEq<T> + One + Zero + Clone + Signed + Algebraic> Matrix<T> {
   pub fn solve(&self, b : &Matrix<T>) -> Option<Matrix<T>> {
     lu::LUDecomposition::new(self).solve(b)
   }
 }
+*/
 
+/*
 impl<T : Add<T, T> + Sub<T, T> + Mul<T, T> + Div<T, T> + Neg<T> + Eq + Ord + ApproxEq<T> + One + Zero + Clone + Signed + Algebraic> Matrix<T> {
   pub fn inverse(&self) -> Option<Matrix<T>> {
     assert!(self.noRows == self.noCols);
     lu::LUDecomposition::new(self).solve(&id(self.noRows, self.noRows))
   }
 }
+*/
 
+/*
 impl<T : Add<T, T> + Sub<T, T> + Mul<T, T> + Div<T, T> + Neg<T> + Eq + Ord + ApproxEq<T> + One + Zero + Clone + Signed + Algebraic + Orderable> Matrix<T> {
   pub fn pinverse(&self) -> Matrix<T> {
     // A+ = (A' A)^-1 A'
@@ -674,7 +958,9 @@ impl<T : Add<T, T> + Sub<T, T> + Mul<T, T> + Div<T, T> + Neg<T> + Eq + Ord + App
     (r.t() * r).inverse().unwrap() * self.t()
   }
 }
+*/
 
+/*
 impl<T : Add<T, T> + Sub<T, T> + Mul<T, T> + Div<T, T> + Neg<T> + Eq + Ord + ApproxEq<T> + One + Zero + Clone + Signed + Algebraic> Matrix<T> {
   #[inline]
   pub fn is_singular(&self) -> bool {
@@ -686,8 +972,9 @@ impl<T : Add<T, T> + Sub<T, T> + Mul<T, T> + Div<T, T> + Neg<T> + Eq + Ord + App
     lu::LUDecomposition::new(self).is_non_singular()
   }
 }
+*/
 
-impl<T> Matrix<T> {
+impl<'self, T> Matrix<'self, T> {
   #[inline]
   pub fn is_square(&self) -> bool {
     self.noRows == self.noCols
@@ -699,6 +986,7 @@ impl<T> Matrix<T> {
   }
 }
 
+/*
 impl<T : Eq + Clone> Matrix<T> {
   pub fn is_symmetric(&self) -> bool {
     if(self.noRows != self.noCols) { return false; }
@@ -716,7 +1004,9 @@ impl<T : Eq + Clone> Matrix<T> {
     !self.is_symmetric()
   }
 }
+*/
 
+/*
 impl<T : Add<T, T> + Mul<T, T> + Algebraic + Zero> Matrix<T> {
   pub fn vector_euclidean_norm(&self) -> T {
     assert!(self.noCols == 1);
@@ -739,7 +1029,9 @@ impl<T : Add<T, T> + Mul<T, T> + Algebraic + Zero> Matrix<T> {
     self.vector_euclidean_norm()
   }
 }
+*/
 
+/*
 impl<T : Add<T, T> + Signed + Zero + Clone> Matrix<T> {
   pub fn vector_1_norm(&self) -> T {
     assert!(self.noCols == 1);
@@ -752,7 +1044,9 @@ impl<T : Add<T, T> + Signed + Zero + Clone> Matrix<T> {
     s
   }
 }
+*/
 
+/*
 impl<T : Add<T, T> + Div<T, T> + Algebraic + Signed + Zero + Clone> Matrix<T> {
   pub fn vector_p_norm(&self, p : T) -> T {
     assert!(self.noCols == 1);
@@ -765,7 +1059,9 @@ impl<T : Add<T, T> + Div<T, T> + Algebraic + Signed + Zero + Clone> Matrix<T> {
     num::pow(s, num::one::<T>() / p)
   }
 }
+*/
 
+/*
 impl<T : Signed + Ord + Clone> Matrix<T> {
   pub fn vector_inf_norm(&self) -> T {
     assert!(self.noCols == 1);
@@ -781,7 +1077,9 @@ impl<T : Signed + Ord + Clone> Matrix<T> {
     current_max
   }
 }
+*/
 
+/*
 impl<T : Add<T, T> + Mul<T, T> + Algebraic + Zero> Matrix<T> {
   pub fn frobenius_norm(&self) -> T {
     let mut s : T = num::zero();
@@ -792,7 +1090,9 @@ impl<T : Add<T, T> + Mul<T, T> + Algebraic + Zero> Matrix<T> {
     num::sqrt(s)
   }
 }
+*/
 
+/*
 impl <S : Clone, T> Matrix<T> {
   pub fn reduce(&self, init: &[S], f: &fn(&S, &T) -> S) -> Matrix<S> {
     assert!(init.len() == self.noCols);
@@ -812,7 +1112,9 @@ impl <S : Clone, T> Matrix<T> {
     }
   }
 }
+*/
 
+/*
 #[test]
 fn test_matrix() {
   let m = matrix(2, 2, ~[1, 2, 3, 4]);
@@ -1340,4 +1642,4 @@ fn test_frobenius_norm() {
   assert!(matrix(2, 2, ~[1.0, 2.0, 3.0, 4.0]).frobenius_norm() == num::sqrt(30.0));
   assert!(vector(~[1.0, 2.0, 2.0]).frobenius_norm() == 3.0);
 }
-
+*/
